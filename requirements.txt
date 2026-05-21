@@ -1,0 +1,10 @@
+polars
+torch
+torchvision
+torchaudio
+faiss-gpu
+streamlit
+requests
+tqdm
+pandas
+numpy
