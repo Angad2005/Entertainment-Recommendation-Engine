@@ -17,11 +17,16 @@ A high-performance, GPU-accelerated recommendation system built with **PyTorch**
 - **Decoupled Parameters**: Independent tracking of **Watched (Seen)** status and **Preferences (Like/Dislike)**.
 - **TV Show Hierarchy**: Feedback can be provided at the **Series, Season, or Episode** level.
 - **Exclusion Sync**: Automatically filters out "Seen" content from recommendations while using "Liked" content to refine the user embedding.
+- **Onboarding Pipeline**: Structured onboarding flows for new profiles, enabling genre selection and baseline title reviews to compute initial user embeddings.
+- **Search & Explore**: Instant search over all titles to allow direct exploration, ratings, and seen updates.
 
 ### ⚡ Performance & Efficiency
 - **Polars LazyFrames**: Memory-efficient processing of IMDb’s 10M+ row dataset using `scan_csv` and lazy evaluation.
 - **Async Background Training**: Real-time model updates triggered by user interactions (Like/Dislike) without freezing the UI.
+- **Atomic Training Backups**: Multi-threaded updates protected by state back-ups; training failures or manual cancellations automatically trigger a roll-back to the latest stable model state.
 - **GPU Optimization**: Hardwired for NVIDIA hardware (e.g., RTX 3050) with `cudnn.benchmark` enabled.
+- **Weekly Auto-Check**: Checks dataset currency weekly and prompts users to sync with official IMDb updates.
+
 
 ## 🛠️ Technology Stack
 

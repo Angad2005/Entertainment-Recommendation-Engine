@@ -189,6 +189,21 @@ def check_data_and_load():
 def get_cached_data():
     return dm.load_data()
 
+def get_item_features_for_tconst(tconst, dm, df, item_features):
+    # Check if tconst is in df
+    matching_idx = np.where(df["tconst"].to_numpy() == tconst)[0]
+    if len(matching_idx) > 0:
+        return item_features[matching_idx[0]].reshape(1, -1)
+    
+    # Otherwise, resolve parent
+    parent_map = dm.resolve_parents([tconst])
+    parent_tconst = parent_map.get(tconst)
+    if parent_tconst:
+        matching_idx = np.where(df["tconst"].to_numpy() == parent_tconst)[0]
+        if len(matching_idx) > 0:
+            return item_features[matching_idx[0]].reshape(1, -1)
+    return None
+
 def show_dashboard():
     # Load Data & Model
     if 'df' not in st.session_state:
@@ -224,12 +239,21 @@ def show_dashboard():
         user_history, 
         st.session_state.df, 
         st.session_state.all_genres,
-        st.session_state.profile.get('genres', [])
+        st.session_state.profile.get('genres', []),
+        dm=dm
     )
     
+    watched_tconsts = [t for t, v in user_history.items() if v.get('watched') == 1]
+    if watched_tconsts:
+        # Resolve parents of watched tconsts to exclude the series as well
+        parent_map = dm.resolve_parents(watched_tconsts)
+        exclude_tconsts = list(set(watched_tconsts + list(parent_map.values())))
+    else:
+        exclude_tconsts = []
+        
     recs = st.session_state.recommender.recommend(
         user_feat, 
-        exclude_tconsts=[t for t, v in user_history.items() if v.get('watched') == 1]
+        exclude_tconsts=exclude_tconsts
     )
     
     cols = st.columns(4)
@@ -252,13 +276,15 @@ def show_dashboard():
 
             if c1.button("👍" if not is_liked else "🌟", key=f"l_{tconst}"):
                 dm.update_preference(st.session_state.profile['name'], tconst, "like")
-                item_idx = np.where(st.session_state.df["tconst"].to_numpy() == tconst)[0][0]
-                st.session_state.trainer.start_training(user_feat, st.session_state.item_features[item_idx].reshape(1,-1), ["like"])
+                features = get_item_features_for_tconst(tconst, dm, st.session_state.df, st.session_state.item_features)
+                if features is not None:
+                    st.session_state.trainer.start_training(user_feat, features, ["like"])
                 st.rerun()
             if c2.button("👎" if not is_disliked else "🚫", key=f"d_{tconst}"):
                 dm.update_preference(st.session_state.profile['name'], tconst, "dislike")
-                item_idx = np.where(st.session_state.df["tconst"].to_numpy() == tconst)[0][0]
-                st.session_state.trainer.start_training(user_feat, st.session_state.item_features[item_idx].reshape(1,-1), ["dislike"])
+                features = get_item_features_for_tconst(tconst, dm, st.session_state.df, st.session_state.item_features)
+                if features is not None:
+                    st.session_state.trainer.start_training(user_feat, features, ["dislike"])
                 st.rerun()
             if c3.button("👀" if not is_watched else "✅", key=f"v_{tconst}"):
                 dm.toggle_watched(st.session_state.profile['name'], tconst)
@@ -271,29 +297,69 @@ def show_dashboard():
                 with st.expander("📺 Episodes"):
                     episodes = dm.get_episodes(rec['tconst'])
                     if episodes:
-                        current_season = None
+                        # Group episodes by season
+                        from collections import defaultdict
+                        seasons = defaultdict(list)
                         for ep in episodes:
-                            if ep['seasonNumber'] != current_season:
-                                current_season = ep['seasonNumber']
-                                st.markdown(f"**Season {current_season}**")
+                            seasons[ep['seasonNumber']].append(ep)
+                        
+                        for season_num in sorted(seasons.keys()):
+                            season_eps = seasons[season_num]
                             
-                            ec1, ec2 = st.columns([3, 2])
-                            ec1.caption(f"E{ep['episodeNumber']}: {ep['primaryTitle']}")
+                            # Determine overall season status
+                            all_liked = all(user_history.get(ep['tconst'], {}).get('preference') == 'like' for ep in season_eps)
+                            all_disliked = all(user_history.get(ep['tconst'], {}).get('preference') == 'dislike' for ep in season_eps)
+                            all_watched = all(user_history.get(ep['tconst'], {}).get('watched') == 1 for ep in season_eps)
                             
-                            is_ep_liked = user_history.get(ep['tconst'], {}).get('preference') == 'like'
-                            is_ep_disliked = user_history.get(ep['tconst'], {}).get('preference') == 'dislike'
-                            is_ep_watched = user_history.get(ep['tconst'], {}).get('watched') == 1
+                            st.markdown(f"---")
+                            sc1, sc2 = st.columns([3, 2])
+                            sc1.markdown(f"**Season {season_num}**")
+                            sfb = sc2.columns(3)
+                            
+                            if sfb[0].button("👍" if not all_liked else "🌟", key=f"season_l_{rec['tconst']}_{season_num}"):
+                                for ep in season_eps:
+                                    dm.update_preference(st.session_state.profile['name'], ep['tconst'], "like")
+                                features = get_item_features_for_tconst(rec['tconst'], dm, st.session_state.df, st.session_state.item_features)
+                                if features is not None:
+                                    st.session_state.trainer.start_training(user_feat, features, ["like"])
+                                st.rerun()
+                            if sfb[1].button("👎" if not all_disliked else "🚫", key=f"season_d_{rec['tconst']}_{season_num}"):
+                                for ep in season_eps:
+                                    dm.update_preference(st.session_state.profile['name'], ep['tconst'], "dislike")
+                                features = get_item_features_for_tconst(rec['tconst'], dm, st.session_state.df, st.session_state.item_features)
+                                if features is not None:
+                                    st.session_state.trainer.start_training(user_feat, features, ["dislike"])
+                                st.rerun()
+                            if sfb[2].button("👀" if not all_watched else "✅", key=f"season_w_{rec['tconst']}_{season_num}"):
+                                target_watched = 0 if all_watched else 1
+                                for ep in season_eps:
+                                    dm.set_watched(st.session_state.profile['name'], ep['tconst'], target_watched)
+                                st.rerun()
+                            
+                            for ep in season_eps:
+                                ec1, ec2 = st.columns([3, 2])
+                                ec1.caption(f"E{ep['episodeNumber']}: {ep['primaryTitle']}")
+                                
+                                is_ep_liked = user_history.get(ep['tconst'], {}).get('preference') == 'like'
+                                is_ep_disliked = user_history.get(ep['tconst'], {}).get('preference') == 'dislike'
+                                is_ep_watched = user_history.get(ep['tconst'], {}).get('watched') == 1
 
-                            efb = ec2.columns(3)
-                            if efb[0].button("👍" if not is_ep_liked else "🌟", key=f"ep_l_{ep['tconst']}"):
-                                dm.update_preference(st.session_state.profile['name'], ep['tconst'], "like")
-                                st.rerun()
-                            if efb[1].button("👎" if not is_ep_disliked else "🚫", key=f"ep_d_{ep['tconst']}"):
-                                dm.update_preference(st.session_state.profile['name'], ep['tconst'], "dislike")
-                                st.rerun()
-                            if efb[2].button("👀" if not is_ep_watched else "✅", key=f"ep_s_{ep['tconst']}"):
-                                dm.toggle_watched(st.session_state.profile['name'], ep['tconst'])
-                                st.rerun()
+                                efb = ec2.columns(3)
+                                if efb[0].button("👍" if not is_ep_liked else "🌟", key=f"ep_l_{ep['tconst']}_{rec['tconst']}"):
+                                    dm.update_preference(st.session_state.profile['name'], ep['tconst'], "like")
+                                    features = get_item_features_for_tconst(ep['tconst'], dm, st.session_state.df, st.session_state.item_features)
+                                    if features is not None:
+                                        st.session_state.trainer.start_training(user_feat, features, ["like"])
+                                    st.rerun()
+                                if efb[1].button("👎" if not is_ep_disliked else "🚫", key=f"ep_d_{ep['tconst']}_{rec['tconst']}"):
+                                    dm.update_preference(st.session_state.profile['name'], ep['tconst'], "dislike")
+                                    features = get_item_features_for_tconst(ep['tconst'], dm, st.session_state.df, st.session_state.item_features)
+                                    if features is not None:
+                                        st.session_state.trainer.start_training(user_feat, features, ["dislike"])
+                                    st.rerun()
+                                if efb[2].button("👀" if not is_ep_watched else "✅", key=f"ep_s_{ep['tconst']}_{rec['tconst']}"):
+                                    dm.toggle_watched(st.session_state.profile['name'], ep['tconst'])
+                                    st.rerun()
                     else:
                         st.write("No episode data available.")
 
@@ -315,13 +381,15 @@ def show_dashboard():
             fb_cols = c2.columns(3)
             if fb_cols[0].button("👍" if not is_liked else "🌟", key=f"s_like_{row['tconst']}"):
                 dm.update_preference(st.session_state.profile['name'], row['tconst'], "like")
-                item_idx = np.where(st.session_state.df["tconst"].to_numpy() == row['tconst'])[0][0]
-                st.session_state.trainer.start_training(user_feat, st.session_state.item_features[item_idx].reshape(1,-1), ["like"])
+                features = get_item_features_for_tconst(row['tconst'], dm, st.session_state.df, st.session_state.item_features)
+                if features is not None:
+                    st.session_state.trainer.start_training(user_feat, features, ["like"])
                 st.rerun()
             if fb_cols[1].button("👎" if not is_disliked else "🚫", key=f"s_dis_{row['tconst']}"):
                 dm.update_preference(st.session_state.profile['name'], row['tconst'], "dislike")
-                item_idx = np.where(st.session_state.df["tconst"].to_numpy() == row['tconst'])[0][0]
-                st.session_state.trainer.start_training(user_feat, st.session_state.item_features[item_idx].reshape(1,-1), ["dislike"])
+                features = get_item_features_for_tconst(row['tconst'], dm, st.session_state.df, st.session_state.item_features)
+                if features is not None:
+                    st.session_state.trainer.start_training(user_feat, features, ["dislike"])
                 st.rerun()
             if fb_cols[2].button("👀" if not is_watched else "✅", key=f"s_seen_{row['tconst']}"):
                 dm.toggle_watched(st.session_state.profile['name'], row['tconst'])
@@ -332,31 +400,72 @@ def show_dashboard():
                 with st.expander("📺 Episodes"):
                     episodes = dm.get_episodes(row['tconst'])
                     if episodes:
-                        current_season = None
+                        # Group episodes by season
+                        from collections import defaultdict
+                        seasons = defaultdict(list)
                         for ep in episodes:
-                            if ep['seasonNumber'] != current_season:
-                                current_season = ep['seasonNumber']
-                                st.markdown(f"**Season {current_season}**")
+                            seasons[ep['seasonNumber']].append(ep)
+                        
+                        for season_num in sorted(seasons.keys()):
+                            season_eps = seasons[season_num]
                             
-                            ec1, ec2 = st.columns([3, 2])
-                            ec1.caption(f"E{ep['episodeNumber']}: {ep['primaryTitle']}")
+                            # Determine overall season status
+                            all_liked = all(user_history.get(ep['tconst'], {}).get('preference') == 'like' for ep in season_eps)
+                            all_disliked = all(user_history.get(ep['tconst'], {}).get('preference') == 'dislike' for ep in season_eps)
+                            all_watched = all(user_history.get(ep['tconst'], {}).get('watched') == 1 for ep in season_eps)
                             
-                            is_ep_liked = user_history.get(ep['tconst'], {}).get('preference') == 'like'
-                            is_ep_disliked = user_history.get(ep['tconst'], {}).get('preference') == 'dislike'
-                            is_ep_watched = user_history.get(ep['tconst'], {}).get('watched') == 1
+                            st.markdown(f"---")
+                            sc1, sc2 = st.columns([3, 2])
+                            sc1.markdown(f"**Season {season_num}**")
+                            sfb = sc2.columns(3)
+                            
+                            if sfb[0].button("👍" if not all_liked else "🌟", key=f"s_season_l_{row['tconst']}_{season_num}"):
+                                for ep in season_eps:
+                                    dm.update_preference(st.session_state.profile['name'], ep['tconst'], "like")
+                                features = get_item_features_for_tconst(row['tconst'], dm, st.session_state.df, st.session_state.item_features)
+                                if features is not None:
+                                    st.session_state.trainer.start_training(user_feat, features, ["like"])
+                                st.rerun()
+                            if sfb[1].button("👎" if not all_disliked else "🚫", key=f"s_season_d_{row['tconst']}_{season_num}"):
+                                for ep in season_eps:
+                                    dm.update_preference(st.session_state.profile['name'], ep['tconst'], "dislike")
+                                features = get_item_features_for_tconst(row['tconst'], dm, st.session_state.df, st.session_state.item_features)
+                                if features is not None:
+                                    st.session_state.trainer.start_training(user_feat, features, ["dislike"])
+                                st.rerun()
+                            if sfb[2].button("👀" if not all_watched else "✅", key=f"s_season_w_{row['tconst']}_{season_num}"):
+                                target_watched = 0 if all_watched else 1
+                                for ep in season_eps:
+                                    dm.set_watched(st.session_state.profile['name'], ep['tconst'], target_watched)
+                                st.rerun()
+                            
+                            for ep in season_eps:
+                                ec1, ec2 = st.columns([3, 2])
+                                ec1.caption(f"E{ep['episodeNumber']}: {ep['primaryTitle']}")
+                                
+                                is_ep_liked = user_history.get(ep['tconst'], {}).get('preference') == 'like'
+                                is_ep_disliked = user_history.get(ep['tconst'], {}).get('preference') == 'dislike'
+                                is_ep_watched = user_history.get(ep['tconst'], {}).get('watched') == 1
 
-                            efb = ec2.columns(3)
-                            if efb[0].button("👍" if not is_ep_liked else "🌟", key=f"sep_l_{ep['tconst']}"):
-                                dm.update_preference(st.session_state.profile['name'], ep['tconst'], "like")
-                                st.rerun()
-                            if efb[1].button("👎" if not is_ep_disliked else "🚫", key=f"sep_d_{ep['tconst']}"):
-                                dm.update_preference(st.session_state.profile['name'], ep['tconst'], "dislike")
-                                st.rerun()
-                            if efb[2].button("👀" if not is_ep_watched else "✅", key=f"sep_s_{ep['tconst']}"):
-                                dm.toggle_watched(st.session_state.profile['name'], ep['tconst'])
-                                st.rerun()
+                                efb = ec2.columns(3)
+                                if efb[0].button("👍" if not is_ep_liked else "🌟", key=f"sep_l_{ep['tconst']}_{row['tconst']}"):
+                                    dm.update_preference(st.session_state.profile['name'], ep['tconst'], "like")
+                                    features = get_item_features_for_tconst(ep['tconst'], dm, st.session_state.df, st.session_state.item_features)
+                                    if features is not None:
+                                        st.session_state.trainer.start_training(user_feat, features, ["like"])
+                                    st.rerun()
+                                if efb[1].button("👎" if not is_ep_disliked else "🚫", key=f"sep_d_{ep['tconst']}_{row['tconst']}"):
+                                    dm.update_preference(st.session_state.profile['name'], ep['tconst'], "dislike")
+                                    features = get_item_features_for_tconst(ep['tconst'], dm, st.session_state.df, st.session_state.item_features)
+                                    if features is not None:
+                                        st.session_state.trainer.start_training(user_feat, features, ["dislike"])
+                                    st.rerun()
+                                if efb[2].button("👀" if not is_ep_watched else "✅", key=f"sep_s_{ep['tconst']}_{row['tconst']}"):
+                                    dm.toggle_watched(st.session_state.profile['name'], ep['tconst'])
+                                    st.rerun()
                     else:
                         st.write("No episode data available.")
 
 if __name__ == "__main__":
     main()
+

@@ -7,4 +7,5 @@ streamlit
 requests
 tqdm
 pandas
-numpy
+numpy<2
+

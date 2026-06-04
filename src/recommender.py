@@ -101,7 +101,7 @@ def prepare_item_features(df, all_genres):
     ])
     return features.astype('float32')
 
-def prepare_user_features(user_history, all_titles_df, all_genres, user_selected_genres=None):
+def prepare_user_features(user_history, all_titles_df, all_genres, user_selected_genres=None, dm=None):
     """
     Build user feature vector from history and explicitly selected genres.
     """
@@ -124,6 +124,15 @@ def prepare_user_features(user_history, all_titles_df, all_genres, user_selected
     liked_tconsts = [t for t, v in user_history.items() if v.get('preference') == 'like']
     
     if liked_tconsts:
+        if dm:
+            # Check which liked_tconsts are not in all_titles_df
+            existing_liked = set(all_titles_df.filter(pl.col("tconst").is_in(liked_tconsts))["tconst"].to_list())
+            missing_liked = [t for t in liked_tconsts if t not in existing_liked]
+            if missing_liked:
+                parent_map = dm.resolve_parents(missing_liked)
+                # Map episode tconsts to their parent series tconsts
+                liked_tconsts = [parent_map.get(t, t) for t in liked_tconsts]
+
         liked_df = all_titles_df.filter(pl.col("tconst").is_in(liked_tconsts))
         
         for genres_str in liked_df["genres"].to_list():
@@ -144,3 +153,4 @@ def prepare_user_features(user_history, all_titles_df, all_genres, user_selected
         
     user_vec = np.hstack([genre_counts, [avg_runtime, avg_year]])
     return user_vec.astype('float32').reshape(1, -1)
+

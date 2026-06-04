@@ -140,6 +140,27 @@ class DataManager:
                 conn.execute("INSERT INTO reviews (profile_name, tconst, watched) VALUES (?, ?, 1)",
                              (profile_name, tconst))
 
+    def set_watched(self, profile_name, tconst, watched):
+        with sqlite3.connect(self.db_path) as conn:
+            cursor = conn.execute("SELECT 1 FROM reviews WHERE profile_name = ? AND tconst = ?", (profile_name, tconst))
+            if cursor.fetchone():
+                conn.execute("UPDATE reviews SET watched = ? WHERE profile_name = ? AND tconst = ?",
+                             (watched, profile_name, tconst))
+            else:
+                conn.execute("INSERT INTO reviews (profile_name, tconst, watched) VALUES (?, ?, ?)",
+                             (profile_name, tconst, watched))
+
+    def resolve_parents(self, tconsts):
+        if not tconsts:
+            return {}
+        ep_path = self.data_dir / "episodes.tsv.gz"
+        if not ep_path.exists():
+            return {}
+        eps_lazy = pl.scan_csv(ep_path, separator="\t", null_values="\\N", ignore_errors=True)
+        resolved = eps_lazy.filter(pl.col("tconst").is_in(tconsts)).select(["tconst", "parentTconst"]).collect()
+        return {row["tconst"]: row["parentTconst"] for row in resolved.to_dicts() if row["parentTconst"]}
+
+
     def get_user_history(self, profile_name):
         with sqlite3.connect(self.db_path) as conn:
             cursor = conn.execute("SELECT tconst, preference, watched FROM reviews WHERE profile_name = ?", (profile_name,))
