@@ -79,7 +79,16 @@ class DataManager:
             last_refresh = datetime.fromisoformat(res[0])
             return datetime.now() - last_refresh > timedelta(days=7)
 
-    def load_data(self):
+    def load_data(self, limit: int | None = None):
+        """Load and return the merged IMDb title DataFrame.
+
+        Parameters
+        ----------
+        limit: Optional[int]
+            If provided, returns only the first ``limit`` rows. This is useful for
+            quick local testing on the large IMDb dump where loading the full
+            dataset would be prohibitively slow.
+        """
         basics_path = self.data_dir / "basics.tsv.gz"
         ratings_path = self.data_dir / "ratings.tsv.gz"
 
@@ -98,8 +107,64 @@ class DataManager:
         cols = ["tconst", "titleType", "primaryTitle", "startYear", "runtimeMinutes", "genres", "averageRating", "numVotes"]
         df_lazy = df_lazy.select(cols)
         
+        # Apply optional row limit before materialising the DataFrame
+        if limit is not None:
+            df_lazy = df_lazy.head(limit)
+        
         # Collect into memory
         return df_lazy.collect()
+
+    def compute_item_features(self, all_genres, cache_dir: str = "data", df=None):
+        """Compute (or load from cache) the item feature matrix.
+
+        The matrix consists of a multi‑hot genre encoding plus normalized runtime and
+        start‑year features. The result is cached as ``item_features.npy`` under
+        ``cache_dir`` to avoid recomputation on every start‑up.
+        """
+        import numpy as np
+        embed_path = os.path.join(cache_dir, "item_features.npy")
+        genre_path = os.path.join(cache_dir, "genres.txt")
+
+        # If a DataFrame is supplied, compute features directly (skip cache).
+        if df is not None:
+            # Bypass cache because the caller provided a custom subset.
+            pass
+        else:
+            # If cached features exist and the genre list matches, reuse them
+            if os.path.exists(embed_path) and os.path.exists(genre_path):
+                try:
+                    with open(genre_path, "r", encoding="utf-8") as f:
+                        cached_genres = [line.strip() for line in f]
+                    if cached_genres == all_genres:
+                        return np.load(embed_path)
+                except Exception:
+                    pass
+            # Load full data when no df supplied
+            df = self.load_data()
+        # Build multi‑hot genre matrix
+        genre_data = []
+        for genres_str in df["genres"].to_list():
+            if genres_str is None:
+                genre_data.append([0] * len(all_genres))
+                continue
+            gs = set(genres_str.split(","))
+            genre_data.append([1 if g in gs else 0 for g in all_genres])
+
+        runtime = df["runtimeMinutes"].fill_null(0).to_numpy() / 300.0
+        year = (df["startYear"].fill_null(2000).to_numpy() - 1900) / 150.0
+
+        features = np.hstack([
+            np.array(genre_data),
+            runtime.reshape(-1, 1),
+            year.reshape(-1, 1)
+        ]).astype('float32')
+
+        os.makedirs(cache_dir, exist_ok=True)
+        np.save(embed_path, features)
+        with open(genre_path, "w", encoding="utf-8") as f:
+            for g in all_genres:
+                f.write(g + "\n")
+        return features
 
     def create_profile(self, name, genres):
         try:

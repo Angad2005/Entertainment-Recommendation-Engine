@@ -209,7 +209,8 @@ def show_dashboard():
     if 'df' not in st.session_state:
         with st.spinner("Loading IMDb Data (Polars Accelerated)..."):
             st.session_state.df = get_cached_data()
-            st.session_state.item_features = prepare_item_features(st.session_state.df, st.session_state.all_genres)
+            # Compute item features with caching to avoid recomputation on every app start
+            st.session_state.item_features = dm.compute_item_features(st.session_state.all_genres)
             
     if 'model' not in st.session_state:
         input_dim = len(st.session_state.all_genres) + 2

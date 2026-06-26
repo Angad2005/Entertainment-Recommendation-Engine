@@ -1,101 +1,69 @@
-# 🎬 AI Hybrid Movie & TV Recommendation Engine
+# 🎬 AI Hybrid Movie & TV Recommendation Engine (Human‑Friendly Overview)
 
-A high-performance, GPU-accelerated recommendation system built with **PyTorch**, **Polars**, and **FAISS**. This engine uses a **Two-Tower Neural Network** architecture to provide real-time, personalized movie and TV show suggestions based on granular user behavior.
+## What is this project?
+It’s a **movie‑recommendation app** that suggests films and TV shows you might like.  It uses a small neural network (called a *Two‑Tower model*) to turn items (movies/episodes) and users into numbers, then finds the items whose numbers are closest to yours.
 
-![Platform Status](https://img.shields.io/badge/Status-Beta-orange)
-![Python Version](https://img.shields.io/badge/Python-3.10%2B-blue)
-![CUDA Support](https://img.shields.io/badge/CUDA-Enabled-green)
+## Why use it?
+- **Fast** – When a compatible NVIDIA GPU is present, we use *FAISS* to search billions of vectors in milliseconds.
+- **Accurate** – The model combines what you’ve watched/liked (collaborative) with the movie’s metadata (genre, year, rating) for a hybrid score.
+- **Simple to run** – One command launches a Streamlit web UI that lets you create a profile, give feedback, and see recommendations.
 
-## 🚀 Key Features
+## Key ideas (no jargon)
+| Concept | Plain language |
+|---------|----------------|
+| Two‑Tower model | Two separate calculators: one turns a **user’s history** into a vector, the other turns a **movie’s details** into a vector. The vectors are then compared.
+| FAISS index | A clever data structure that can find the *nearest* vectors super quickly (think “find the closest friends”).
+| Polars | A fast table library (like pandas) that lets us read the huge IMDb files without using too much memory.
+| Hybrid scoring | We mix similarity (how close the vectors are) with the movie’s average rating, so a well‑rated film can move up the list.
 
-### 🧠 Advanced Recommendation Model
-- **Two-Tower Architecture**: Separate neural networks for User and Item embeddings, optimized for high-dimensional feature matching.
-- **Hybrid Filtering**: Combines collaborative signals (user preferences) with content-based features (genres, ratings, years).
-- **FAISS-GPU Integration**: Sub-millisecond similarity search using GPU-accelerated vector indices with **Float16 (FP16)** storage for reduced VRAM footprint.
-
-### 📊 Granular User Tracking
-- **Decoupled Parameters**: Independent tracking of **Watched (Seen)** status and **Preferences (Like/Dislike)**.
-- **TV Show Hierarchy**: Feedback can be provided at the **Series, Season, or Episode** level.
-- **Exclusion Sync**: Automatically filters out "Seen" content from recommendations while using "Liked" content to refine the user embedding.
-- **Onboarding Pipeline**: Structured onboarding flows for new profiles, enabling genre selection and baseline title reviews to compute initial user embeddings.
-- **Search & Explore**: Instant search over all titles to allow direct exploration, ratings, and seen updates.
-
-### ⚡ Performance & Efficiency
-- **Polars LazyFrames**: Memory-efficient processing of IMDb’s 10M+ row dataset using `scan_csv` and lazy evaluation.
-- **Async Background Training**: Real-time model updates triggered by user interactions (Like/Dislike) without freezing the UI.
-- **Atomic Training Backups**: Multi-threaded updates protected by state back-ups; training failures or manual cancellations automatically trigger a roll-back to the latest stable model state.
-- **GPU Optimization**: Hardwired for NVIDIA hardware (e.g., RTX 3050) with `cudnn.benchmark` enabled.
-- **Weekly Auto-Check**: Checks dataset currency weekly and prompts users to sync with official IMDb updates.
-
-
-## 🛠️ Technology Stack
-
-- **Framework**: Streamlit (UI/Dashboard)
-- **ML Core**: PyTorch (Neural Networks)
-- **Data Engine**: Polars (Data Manipulation)
-- **Vector Search**: FAISS (GPU Accelerated)
-- **Database**: SQLite (User Profiles & Feedback)
-- **Dataset**: Official IMDb Datasets (Basics, Ratings, Episodes)
-
-## 📁 Project Structure
-
-```text
+## How the code is organized
+```
 Engine/
-├── data/               # IMDb Datasets (TSV.GZ) & SQLite DB
-├── src/
-│   ├── app.py          # Main Streamlit Dashboard & UI
-│   ├── data_manager.py # IMDb Data Ingestion & SQL Profile Management
-│   ├── model.py        # Two-Tower PyTorch Architecture
-│   ├── recommender.py  # FAISS Indexing & Hybrid Scoring
-│   ├── trainer.py      # Async Background Training Logic
-├── requirements.txt    # Dependency List
-└── README.md           # This file
+├─ data/                 # IMDb raw TSV.gz files and a SQLite DB for profiles
+├─ src/                  # Core Python code
+│   ├─ app.py            # Streamlit UI – the dashboard you’ll see in the browser
+│   ├─ data_manager.py   # Loads IMDb data, handles the SQLite profile store
+│   ├─ model.py          # Definition of the Two‑Tower PyTorch model
+│   ├─ recommender.py    # Builds the FAISS index and performs the hybrid search
+│   └─ trainer.py        # Background worker that updates the model when you give new feedback
+├─ requirements.txt      # Packages you need to install
+└─ Readme.md             # This file (human‑friendly version)
 ```
 
-## ⚙️ Installation & Setup
-
-1. **Clone the repository**:
+## Quick start (step‑by‑step)
+1. **Clone the repo**
    ```bash
-   git clone <repo-url>
+   git clone <repo‑url>
    cd Engine
    ```
-
-2. **Install Dependencies**:
+2. **Install the Python packages**
    ```bash
    pip install -r requirements.txt
    ```
-
-3. **Hardware Check**:
-   Ensure you have an NVIDIA GPU and CUDA drivers installed for maximum performance. The system will fallback to CPU if no GPU is detected.
-
-4. **Launch the Engine**:
+3. **Check your hardware** – If you have an NVIDIA GPU with CUDA installed, the engine will automatically use it. If not, it will fall back to the CPU.
+4. **Run the web app**
    ```bash
-   python3 -m streamlit run src/app.py
+   streamlit run src/app.py
    ```
+   Open the URL shown in the terminal (usually `http://localhost:8501`).
 
-## 📈 System Architecture
+## First‑time experience
+- **Create a profile** – Choose a name. The app will ask you to pick a few favorite genres.
+- **On‑boarding** – You’ll see a short list of titles and can mark them as *Liked*, *Disliked*, or *Seen*. This tiny amount of feedback is enough for the model to build an initial user vector.
+- **Explore** – Use the search bar to browse titles, click the "👍 Like" or "👀 Seen" buttons, and watch the recommendations update in real time.
 
-```mermaid
-graph TD
-    A[IMDb Dataset] --> B(Polars LazyFrames)
-    B --> C{DataManager}
-    C --> D[SQLite Profile Store]
-    C --> E[Item Feature Vector]
-    
-    F[User Interaction] --> G(Async Trainer)
-    G --> H[Two-Tower Model]
-    H --> I[User Embedding]
-    
-    E --> J[FAISS-GPU Index]
-    I --> K[Vector Similarity Search]
-    J --> K
-    
-    K --> L[Hybrid Scorer]
-    L --> M[Personalized Dashboard]
-```
+## Updating the model
+When you give new likes/dislikes, a background thread (`trainer.AsyncTrainer`) retrains the Two‑Tower model without freezing the UI. Once training finishes, the index is rebuilt automatically.
 
-## 📝 License
-Distributed under the MIT License. See `LICENSE` for more information.
+## FAQs
+**Do I need a GPU?** No. The code works on CPU, just slower. It will automatically detect CUDA.
+
+**Can I add my own movies?** The data loader works with the official IMDb TSV files. You could extend `data_manager.py` to load a custom CSV if you wish.
+
+**What if I don’t have Streamlit installed?** It’s listed in `requirements.txt`. Installing the requirements will bring it in.
+
+## License
+MIT – feel free to adapt, share, and build on this project.
 
 ---
-*Built for cinematic excellence.* 🍿
+*Enjoy discovering your next favorite show!* 🍿
