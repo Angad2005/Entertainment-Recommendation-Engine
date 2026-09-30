@@ -2,10 +2,10 @@ polars
 torch
 faiss-cpu
 streamlit
-huggingface_hub
-sentence-transformers
+huggingface_hub>=0.30,<3
+sentence-transformers>=5.1,<7
 requests
 tqdm
 pandas
-numpy<2
+numpy>=2,<3
 
