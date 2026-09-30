@@ -6,11 +6,22 @@ import torch
 import torch.nn as nn
 import torch.optim as optim
 import time
+import hashlib
+import os
 from pathlib import Path
 from data_manager import DataManager
 from model import TwoTowerModel, get_device, save_model, load_model
-from recommender import Recommender, prepare_item_features, prepare_user_features
+from recommender import HF_EMBEDDING_MODEL, Recommender, prepare_user_features
 from trainer import AsyncTrainer
+from huggingface_hub import HfApi
+from sentence_transformers import SentenceTransformer
+
+def get_deployment_hf_token():
+    token = os.environ.get("HF_TOKEN")
+    try:
+        return st.secrets.get("HF_TOKEN") or token
+    except Exception:
+        return token
 
 # --- Page Config ---
 st.set_page_config(page_title="AI Movie & TV Engine", page_icon="🎬", layout="wide")
@@ -41,6 +52,43 @@ dm = st.session_state.data_manager
 
 # --- Sidebar: Profile & GPU Status ---
 with st.sidebar:
+    st.subheader("Hugging Face")
+    deployment_hf_token = get_deployment_hf_token()
+    if deployment_hf_token:
+        hf_token = deployment_hf_token
+        st.caption("Using Hugging Face credentials from deployment configuration.")
+    else:
+        hf_token = st.text_input(
+            "Access token", type="password", key="hf_token_input",
+            help="Your token is kept in this Streamlit session and is not saved to disk."
+        )
+    token_hash = hashlib.sha256(hf_token.encode()).hexdigest() if hf_token else None
+    if st.session_state.get("connected_hf_token_hash") != token_hash:
+        for key in ("hf_encoder", "df", "item_features", "model", "optimizer", "criterion", "trainer", "recommender"):
+            st.session_state.pop(key, None)
+        st.session_state.connected_hf_token_hash = None
+
+    should_connect = st.button("Connect", key="connect_huggingface")
+    should_connect = should_connect or bool(
+        deployment_hf_token and st.session_state.get("connected_hf_token_hash") != token_hash
+    )
+    if should_connect:
+        if not hf_token:
+            st.error("Enter a Hugging Face access token to continue.")
+        else:
+            try:
+                with st.spinner("Authenticating and loading text embedding model..."):
+                    HfApi(token=hf_token).whoami()
+                    st.session_state.hf_encoder = SentenceTransformer(
+                        HF_EMBEDDING_MODEL, token=hf_token, device=str(st.session_state.device)
+                    )
+                    st.session_state.connected_hf_token_hash = token_hash
+                st.success("Hugging Face model connected.")
+            except Exception:
+                st.session_state.pop("hf_encoder", None)
+                st.session_state.connected_hf_token_hash = None
+                st.error("Could not authenticate or load the embedding model. Check your token and network access.")
+
     st.title("🎬 Engine Status")
     gpu_available = torch.cuda.is_available()
     st.status(f"CUDA: {'✅ Enabled' if gpu_available else '❌ CPU Only'}", expanded=False)
@@ -58,6 +106,10 @@ with st.sidebar:
 # --- App Flow ---
 
 def main():
+    if not st.session_state.get("hf_encoder"):
+        st.title("Connect to Hugging Face")
+        st.info("Enter your Hugging Face access token in the top-left sidebar to load the recommendation model and text embeddings.")
+        st.stop()
     check_data_and_load()
     if 'profile' not in st.session_state or st.session_state.profile is None:
         show_login()
@@ -210,10 +262,17 @@ def show_dashboard():
         with st.spinner("Loading IMDb Data (Polars Accelerated)..."):
             st.session_state.df = get_cached_data()
             # Compute item features with caching to avoid recomputation on every app start
-            st.session_state.item_features = dm.compute_item_features(st.session_state.all_genres)
+            st.session_state.item_features = dm.compute_item_features(
+                st.session_state.all_genres,
+                text_encoder=st.session_state.hf_encoder,
+                embedding_model=HF_EMBEDDING_MODEL
+            )
             
     if 'model' not in st.session_state:
-        input_dim = len(st.session_state.all_genres) + 2
+        input_dim = (
+            len(st.session_state.all_genres) + 2
+            + st.session_state.hf_encoder.get_sentence_embedding_dimension()
+        )
         st.session_state.model = TwoTowerModel(input_dim, input_dim).to(st.session_state.device)
         st.session_state.optimizer = optim.Adam(st.session_state.model.parameters(), lr=0.001)
         st.session_state.criterion = nn.MSELoss()
@@ -241,7 +300,8 @@ def show_dashboard():
         st.session_state.df, 
         st.session_state.all_genres,
         st.session_state.profile.get('genres', []),
-        dm=dm
+        dm=dm,
+        text_encoder=st.session_state.hf_encoder
     )
     
     watched_tconsts = [t for t, v in user_history.items() if v.get('watched') == 1]

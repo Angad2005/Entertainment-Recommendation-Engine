@@ -1,9 +1,9 @@
 polars
 torch
-torchvision
-torchaudio
-faiss-gpu
+faiss-cpu
 streamlit
+huggingface_hub
+sentence-transformers
 requests
 tqdm
 pandas

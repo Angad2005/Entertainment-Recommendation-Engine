@@ -46,6 +46,20 @@ Engine/
    streamlit run src/app.py
    ```
    Open the URL shown in the terminal (usually `http://localhost:8501`).
+5. **Connect Hugging Face** – Enter a Hugging Face access token in the top-left sidebar and select **Connect**. The app uses `sentence-transformers/all-MiniLM-L6-v2` to embed title and genre text; the token is held only in the active Streamlit session.
+
+For Streamlit Community Cloud, add `HF_TOKEN = "hf_..."` under **App settings > Secrets**. The app will use this secret to authenticate and load the Hugging Face model automatically. Do not commit the token to the repository.
+
+## Deploy with Docker
+Docker Compose provides a reproducible Linux deployment and keeps downloaded IMDb data and user profiles in the host's `data/` directory:
+
+```bash
+docker compose up --build -d
+```
+
+Open `http://localhost:8501`. The first launch downloads the IMDb datasets, so allow several minutes and ensure the host has several gigabytes of free disk space. Keep the `/app/data` volume when updating or recreating the container; it contains both the datasets and the SQLite profile database.
+
+To deploy on a container platform, build this repository's `Dockerfile`, expose port `8501`, and attach persistent storage at `/app/data`. The image uses CPU-only PyTorch and FAISS, so it does not require an NVIDIA runtime.
 
 ## First‑time experience
 - **Create a profile** – Choose a name. The app will ask you to pick a few favorite genres.

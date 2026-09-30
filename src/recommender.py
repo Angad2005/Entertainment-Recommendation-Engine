@@ -8,6 +8,8 @@ import polars as pl
 import os
 from model import get_device
 
+HF_EMBEDDING_MODEL = "sentence-transformers/all-MiniLM-L6-v2"
+
 class Recommender:
     def __init__(self, model, item_df, embedding_dim=128):
         self.model = model
@@ -28,9 +30,10 @@ class Recommender:
           so subsequent runs can load them instantly.
         """
         # Determine cache file paths for embeddings, filtered indices, and optional FAISS index
-        embed_path = os.path.join(cache_dir, "item_embeddings.npy")
-        idx_path = os.path.join(cache_dir, "filtered_indices.npy")
-        faiss_path = os.path.join(cache_dir, "faiss_index.bin")
+        feature_size = item_features.shape[1]
+        embed_path = os.path.join(cache_dir, f"item_embeddings_{feature_size}.npy")
+        idx_path = os.path.join(cache_dir, f"filtered_indices_{feature_size}.npy")
+        faiss_path = os.path.join(cache_dir, f"faiss_index_{feature_size}.bin")
 
         # If cached files exist, load them to avoid recomputation
         if os.path.exists(embed_path) and os.path.exists(idx_path):
@@ -110,6 +113,8 @@ class Recommender:
         else:
             distances, indices = self._brute_force_search(user_embedding, top_k)
 
+        distances = np.asarray(distances).reshape(-1)
+        indices = np.asarray(indices).reshape(-1)
         results = []
         exclude_set = set(exclude_tconsts) if exclude_tconsts else set()
         for dist, idx in zip(distances, indices):
@@ -139,7 +144,7 @@ class Recommender:
         results = sorted(results, key=lambda x: x["score"], reverse=True)
         return results
 
-def prepare_item_features(df, all_genres):
+def prepare_item_features(df, all_genres, text_encoder=None):
     """
     Convert Polars DF to feature matrix.
     """
@@ -163,9 +168,18 @@ def prepare_item_features(df, all_genres):
         runtime.reshape(-1, 1),
         year.reshape(-1, 1)
     ])
+    if text_encoder is not None:
+        title_texts = [
+            f"{title or ''}. Genres: {genres or 'unknown'}"
+            for title, genres in zip(df["primaryTitle"].to_list(), df["genres"].to_list())
+        ]
+        text_embeddings = text_encoder.encode(
+            title_texts, batch_size=128, show_progress_bar=False, normalize_embeddings=True
+        )
+        features = np.hstack([features, np.asarray(text_embeddings, dtype="float32")])
     return features.astype('float32')
 
-def prepare_user_features(user_history, all_titles_df, all_genres, user_selected_genres=None, dm=None):
+def prepare_user_features(user_history, all_titles_df, all_genres, user_selected_genres=None, dm=None, text_encoder=None):
     """
     Build user feature vector from history and explicitly selected genres.
     """
@@ -182,6 +196,12 @@ def prepare_user_features(user_history, all_titles_df, all_genres, user_selected
         if np.sum(genre_counts) > 0:
             genre_counts /= np.sum(genre_counts)
         features = np.hstack([genre_counts, np.array([0.0, 0.0])])
+        if text_encoder is not None:
+            preference_text = f"Favorite genres: {', '.join(user_selected_genres)}"
+            text_embedding = text_encoder.encode(
+                [preference_text], show_progress_bar=False, normalize_embeddings=True
+            )[0]
+            features = np.hstack([features, np.asarray(text_embedding, dtype="float32")])
         return features.astype('float32').reshape(1, -1)
     
     # Aggregate genres of liked items
@@ -216,5 +236,20 @@ def prepare_user_features(user_history, all_titles_df, all_genres, user_selected
         genre_counts /= np.sum(genre_counts)
         
     user_vec = np.hstack([genre_counts, [avg_runtime, avg_year]])
+    if text_encoder is not None:
+        text_parts = [f"Favorite genres: {', '.join(user_selected_genres)}"]
+        if liked_tconsts:
+            liked_titles = all_titles_df.filter(pl.col("tconst").is_in(liked_tconsts))
+            text_parts.extend(
+                f"I like {title}. Genres: {genres or 'unknown'}"
+                for title, genres in zip(
+                    liked_titles["primaryTitle"].to_list(), liked_titles["genres"].to_list()
+                )
+            )
+        preference_text = ". ".join(part for part in text_parts if part.strip())
+        text_embedding = text_encoder.encode(
+            [preference_text], show_progress_bar=False, normalize_embeddings=True
+        )[0]
+        user_vec = np.hstack([user_vec, np.asarray(text_embedding, dtype="float32")])
     return user_vec.astype('float32').reshape(1, -1)
 

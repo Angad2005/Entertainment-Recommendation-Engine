@@ -4,6 +4,8 @@ import requests
 import gzip
 import shutil
 import os
+import tempfile
+import zlib
 from pathlib import Path
 from datetime import datetime, timedelta
 
@@ -29,8 +31,6 @@ class DataManager:
                     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
                 )
             """)
-            # Re-create table for new schema (separating Preference and Watched status)
-            conn.execute("DROP TABLE IF EXISTS reviews")
             conn.execute("""
                 CREATE TABLE IF NOT EXISTS reviews (
                     profile_name TEXT,
@@ -49,22 +49,49 @@ class DataManager:
                 )
             """)
 
+    @staticmethod
+    def _is_valid_gzip(path):
+        try:
+            with gzip.open(path, "rb") as data_file:
+                while data_file.read(1024 * 1024):
+                    pass
+        except (OSError, EOFError, zlib.error):
+            return False
+        return True
+
+    def _download_file(self, name, url, callback=None):
+        dest = self.data_dir / f"{name}.tsv.gz"
+        temp_path = None
+        try:
+            with tempfile.NamedTemporaryFile(
+                mode="wb", dir=self.data_dir, prefix=f".{name}.", suffix=".part", delete=False
+            ) as temp_file:
+                temp_path = Path(temp_file.name)
+                with requests.get(url, stream=True, timeout=(10, 120)) as response:
+                    response.raise_for_status()
+                    total_size = int(response.headers.get("content-length", 0))
+                    downloaded = 0
+
+                    for chunk in response.iter_content(chunk_size=8192 * 1024):
+                        if chunk:
+                            temp_file.write(chunk)
+                            downloaded += len(chunk)
+                            if callback and total_size > 0:
+                                callback(name, downloaded / total_size)
+
+            if not self._is_valid_gzip(temp_path):
+                raise OSError(f"Downloaded {name} dataset is not a valid gzip file")
+            os.replace(temp_path, dest)
+        finally:
+            if temp_path is not None:
+                temp_path.unlink(missing_ok=True)
+
     def download_data(self, force=False, callback=None):
         for name, url in self.IMDB_URLS.items():
             dest = self.data_dir / f"{name}.tsv.gz"
             if not dest.exists() or force:
                 print(f"Downloading {name}...")
-                response = requests.get(url, stream=True)
-                total_size = int(response.headers.get('content-length', 0))
-                downloaded = 0
-                
-                with open(dest, "wb") as f:
-                    for chunk in response.iter_content(chunk_size=8192 * 1024): # 8MB chunks
-                        if chunk:
-                            f.write(chunk)
-                            downloaded += len(chunk)
-                            if callback and total_size > 0:
-                                callback(name, downloaded / total_size)
+                self._download_file(name, url, callback)
         
         # Update last refresh time
         with sqlite3.connect(self.db_path) as conn:
@@ -95,26 +122,29 @@ class DataManager:
         if not basics_path.exists() or not ratings_path.exists():
             self.download_data()
 
-        # Use Lazy Loading with scan_csv
-        basics_lazy = pl.scan_csv(basics_path, separator="\t", null_values="\\N", ignore_errors=True, quote_char=None)
-        ratings_lazy = pl.scan_csv(ratings_path, separator="\t", null_values="\\N", ignore_errors=True, quote_char=None)
+        def build_lazy_frame():
+            basics_lazy = pl.scan_csv(basics_path, separator="\t", null_values="\\N", ignore_errors=True, quote_char=None)
+            ratings_lazy = pl.scan_csv(ratings_path, separator="\t", null_values="\\N", ignore_errors=True, quote_char=None)
+            df_lazy = basics_lazy.filter(pl.col("titleType").is_in(["movie", "tvSeries"]))
+            df_lazy = df_lazy.join(ratings_lazy, on="tconst", how="inner")
+            cols = ["tconst", "titleType", "primaryTitle", "startYear", "runtimeMinutes", "genres", "averageRating", "numVotes"]
+            df_lazy = df_lazy.select(cols)
+            if limit is not None:
+                df_lazy = df_lazy.head(limit)
+            return df_lazy
 
-        # Apply filters and joins lazily
-        df_lazy = basics_lazy.filter(pl.col("titleType").is_in(["movie", "tvSeries"]))
-        df_lazy = df_lazy.join(ratings_lazy, on="tconst", how="inner")
-        
-        # Select only necessary columns to save memory
-        cols = ["tconst", "titleType", "primaryTitle", "startYear", "runtimeMinutes", "genres", "averageRating", "numVotes"]
-        df_lazy = df_lazy.select(cols)
-        
-        # Apply optional row limit before materialising the DataFrame
-        if limit is not None:
-            df_lazy = df_lazy.head(limit)
-        
-        # Collect into memory
-        return df_lazy.collect()
+        try:
+            return build_lazy_frame().collect()
+        except (OSError, EOFError):
+            paths = {"basics": basics_path, "ratings": ratings_path}
+            damaged = [name for name, path in paths.items() if not self._is_valid_gzip(path)]
+            if not damaged:
+                raise
+            for name in damaged:
+                self._download_file(name, self.IMDB_URLS[name])
+            return build_lazy_frame().collect()
 
-    def compute_item_features(self, all_genres, cache_dir: str = "data", df=None):
+    def compute_item_features(self, all_genres, cache_dir: str = "data", df=None, text_encoder=None, embedding_model=None):
         """Compute (or load from cache) the item feature matrix.
 
         The matrix consists of a multi‑hot genre encoding plus normalized runtime and
@@ -122,8 +152,9 @@ class DataManager:
         ``cache_dir`` to avoid recomputation on every start‑up.
         """
         import numpy as np
-        embed_path = os.path.join(cache_dir, "item_features.npy")
-        genre_path = os.path.join(cache_dir, "genres.txt")
+        cache_suffix = f"_{embedding_model.replace('/', '_')}" if text_encoder is not None and embedding_model else ""
+        embed_path = os.path.join(cache_dir, f"item_features{cache_suffix}.npy")
+        genre_path = os.path.join(cache_dir, f"genres{cache_suffix}.txt")
 
         # If a DataFrame is supplied, compute features directly (skip cache).
         if df is not None:
@@ -136,7 +167,12 @@ class DataManager:
                     with open(genre_path, "r", encoding="utf-8") as f:
                         cached_genres = [line.strip() for line in f]
                     if cached_genres == all_genres:
-                        return np.load(embed_path)
+                        cached_features = np.load(embed_path)
+                        expected_dim = len(all_genres) + 2
+                        if text_encoder is not None:
+                            expected_dim += text_encoder.get_sentence_embedding_dimension()
+                        if cached_features.shape[1] == expected_dim:
+                            return cached_features
                 except Exception:
                     pass
             # Load full data when no df supplied
@@ -158,6 +194,16 @@ class DataManager:
             runtime.reshape(-1, 1),
             year.reshape(-1, 1)
         ]).astype('float32')
+
+        if text_encoder is not None:
+            title_texts = [
+                f"{title or ''}. Genres: {genres or 'unknown'}"
+                for title, genres in zip(df["primaryTitle"].to_list(), df["genres"].to_list())
+            ]
+            text_embeddings = text_encoder.encode(
+                title_texts, batch_size=128, show_progress_bar=False, normalize_embeddings=True
+            )
+            features = np.hstack([features, np.asarray(text_embeddings, dtype="float32")])
 
         os.makedirs(cache_dir, exist_ok=True)
         np.save(embed_path, features)
